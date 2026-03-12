@@ -26,6 +26,8 @@ def image_tag_to_img(image_tag: Tag, soup: BeautifulSoup) -> Tag:
     """Convert a single <image> tag to <img src="..." class="fit">.
     Drops all original attributes."""
     src = get_image_src(image_tag)
+    # "fit" class is added by calibre when converted from epub -> azw3. This class is preserved
+    # when converted from azw3 -> epub.
     img = soup.new_tag("img", attrs={"class": "fit"})
     if src:
         img["src"] = src
@@ -41,6 +43,7 @@ def collect_img_tags(svg_tag: Tag, soup: BeautifulSoup) -> list[Tag]:
 def svg_tag_to_p(svg_tag: Tag, soup: BeautifulSoup) -> Tag:
     """Replace an <svg> tag with <p class="calibre"> containing converted
     <img> children."""
+    # "calibre" class is added by calibre when converted from epub -> azw3.
     p = soup.new_tag("p", attrs={"class": "calibre"})
     for img in collect_img_tags(svg_tag, soup):
         p.append(img)
