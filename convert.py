@@ -2,8 +2,13 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-
 from bs4 import BeautifulSoup, Tag
+from enum import Enum, auto
+
+
+class Format(Enum):
+    EPUB = ".epub"
+    AZW3 = ".azw3"
 
 
 # ---------------------------------------------------------------------------
@@ -12,8 +17,7 @@ from bs4 import BeautifulSoup, Tag
 
 
 def get_image_src(image_tag: Tag) -> str | None:
-    """Extract the href value from an <image> tag.
-    Tries xlink:href first, then plain href, then src."""
+    """Extract the image path in <image> tag."""
     return image_tag.get("xlink:href") or image_tag.get("href") or image_tag.get("src")
 
 
@@ -129,7 +133,7 @@ def fixed_epub_path(input_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def convert_to_epub(input_path: Path, output_path: Path) -> None:
+def ebook_convert(input_path: Path, output_path: Path) -> bool:
     """Convert any ebook format to epub using Calibre's ebook-convert."""
     result = subprocess.run(
         ["ebook-convert", str(input_path), str(output_path)],
@@ -137,31 +141,26 @@ def convert_to_epub(input_path: Path, output_path: Path) -> None:
         text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ebook-convert failed (exit {result.returncode}):\n{result.stderr}"
-        )
+        print(f"ebook-convert failed (exit {result.returncode}):\n{result.stderr}")
+        return False
+    return True
+
+
+def convert_with_calibre(input_path: Path, output_dir: Path, format: Format) -> Path:
+    """Convert input to the specified format into output_dir."""
+    converted_path = output_dir / input_path.with_suffix(str(format)).name
+    print(f"Converting {input_path.name} -> {converted_path.name} via ebook-convert...")
+    if not ebook_convert(input_path, converted_path):
+        raise RuntimeError("Conversion failed!")
+    return converted_path
 
 
 def to_epub_in_dir(input_path: Path, directory: Path) -> Path:
-    """If input is already an epub, return it as-is.
-    Otherwise convert to epub via Calibre into directory and return that path."""
-    if input_path.suffix.lower() == ".epub":
-        return input_path
-    converted_path = directory / input_path.with_suffix(".epub").name
-    print(f"Converting {input_path.name} -> {converted_path.name} via ebook-convert...")
-    convert_to_epub(input_path, converted_path)
-    return converted_path
+    return convert_with_calibre(input_path, directory, Format.EPUB)
 
 
 def to_azw3_in_dir(input_path: Path, directory: Path) -> Path:
-    """If input is already an azw3, return it as-is.
-    Otherwise convert to azw3 via Calibre into directory and return that path."""
-    if input_path.suffix.lower() == ".azw3":
-        return input_path
-    converted_path = directory / input_path.with_suffix(".azw3").name
-    print(f"Converting {input_path.name} -> {converted_path.name} via ebook-convert...")
-    convert_to_epub(input_path, converted_path)
-    return converted_path
+    return convert_with_calibre(input_path, directory, Format.AZW3)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +180,12 @@ def fix_epub(input_epub_file_path: str | Path) -> Path:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        # This conversion dance from epub (input) -> azw3 -> epub is necessary.
+        # Convering epub -> azw3 creates a bunch of css classes such as ".fit" and ".calibre"
+        # that is assumed in this script.
+        # Since manipulating azw3 is not as straight forward, it is converted
+        # back to epub (azw3 -> epub).
+        # Finally the epub is manipulated to fix the issue.
         azw3_path = to_azw3_in_dir(input_path, tmp)
         epub_path = to_epub_in_dir(azw3_path, tmp)
         output_path = fixed_epub_path(input_path.with_suffix(".epub"))
