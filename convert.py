@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 import tempfile
 import zipfile
@@ -148,7 +149,7 @@ def ebook_convert(input_path: Path, output_path: Path) -> bool:
 
 def convert_with_calibre(input_path: Path, output_dir: Path, format: Format) -> Path:
     """Convert input to the specified format into output_dir."""
-    converted_path = output_dir / input_path.with_suffix(str(format)).name
+    converted_path = output_dir / input_path.with_suffix(format.value).name
     print(f"Converting {input_path.name} -> {converted_path.name} via ebook-convert...")
     if not ebook_convert(input_path, converted_path):
         raise RuntimeError("Conversion failed!")
@@ -168,7 +169,9 @@ def to_azw3_in_dir(input_path: Path, directory: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def fix_epub(input_epub_file_path: str | Path) -> Path:
+def fix_epub(
+    input_epub_file_path: str | Path, output_epub_file_path: str | Path
+) -> Path:
     """Convert input to epub if needed, then fix it by replacing <svg>
     elements with <p class="calibre"> and converting inner
     <image xlink:href="..."> to <img src="..." class="fit">.
@@ -177,6 +180,7 @@ def fix_epub(input_epub_file_path: str | Path) -> Path:
     with a '_fixed' suffix).
     """
     input_path = Path(input_epub_file_path)
+    output_path = Path(output_epub_file_path)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
@@ -188,7 +192,6 @@ def fix_epub(input_epub_file_path: str | Path) -> Path:
         # Finally the epub is manipulated to fix the issue.
         azw3_path = to_azw3_in_dir(input_path, tmp)
         epub_path = to_epub_in_dir(azw3_path, tmp)
-        output_path = fixed_epub_path(input_path.with_suffix(".epub"))
         unzip_epub(epub_path, tmp / "unpacked")
         process_xhtml_files_in_dir(tmp / "unpacked")
         rezip_epub(tmp / "unpacked", output_path)
@@ -197,10 +200,14 @@ def fix_epub(input_epub_file_path: str | Path) -> Path:
     return output_path
 
 
-if __name__ == "__main__":
-    import sys
+def handle_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input", required=True, help="Path to the ebook file")
+    parser.add_argument("-o", "--output", required=True, help="Output file path")
+    args = parser.parse_args()
+    return args
 
-    if len(sys.argv) != 2:
-        print("Usage: python fix_epub.py <input_file>")
-        sys.exit(1)
-    fix_epub(sys.argv[1])
+
+if __name__ == "__main__":
+    args = handle_args()
+    fix_epub(args.input, args.output)
