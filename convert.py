@@ -1,10 +1,9 @@
 import argparse
-import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
 from bs4 import BeautifulSoup, Tag
-from enum import Enum, auto
+from enum import Enum
 
 
 class Format(Enum):
@@ -23,12 +22,16 @@ def get_image_src(image_tag: Tag) -> str | None:
 
 
 def image_tag_to_img(image_tag: Tag, soup: BeautifulSoup) -> Tag:
-    """Convert a single <image> tag to <img src="..." class="fit">.
+    """Convert a single <image> tag to <img src="...">.
     Drops all original attributes."""
     src = get_image_src(image_tag)
-    # "fit" class is added by calibre when converted from epub -> azw3. This class is preserved
-    # when converted from azw3 -> epub.
-    img = soup.new_tag("img", attrs={"class": "fit"})
+    img = soup.new_tag(
+        "img",
+        attrs={
+            "max-width": "100%",
+            "max-height": "100%",
+        },
+    )
     if src:
         img["src"] = src
     return img
@@ -36,15 +39,13 @@ def image_tag_to_img(image_tag: Tag, soup: BeautifulSoup) -> Tag:
 
 def collect_img_tags(svg_tag: Tag, soup: BeautifulSoup) -> list[Tag]:
     """Find all <image> children (at any depth) inside an svg and convert
-    each to an <img> tag."""
+    each to custom <img> tag."""
     return [image_tag_to_img(image, soup) for image in svg_tag.find_all("image")]
 
 
 def svg_tag_to_p(svg_tag: Tag, soup: BeautifulSoup) -> Tag:
-    """Replace an <svg> tag with <p class="calibre"> containing converted
-    <img> children."""
-    # "calibre" class is added by calibre when converted from epub -> azw3.
-    p = soup.new_tag("p", attrs={"class": "calibre"})
+    """Replace an <svg> tag with <p> containing converted <img> children."""
+    p = soup.new_tag("p")
     for img in collect_img_tags(svg_tag, soup):
         p.append(img)
     return p
@@ -133,41 +134,6 @@ def fixed_epub_path(input_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Calibre conversion
-# ---------------------------------------------------------------------------
-
-
-def ebook_convert(input_path: Path, output_path: Path) -> bool:
-    """Convert any ebook format to epub using Calibre's ebook-convert."""
-    result = subprocess.run(
-        ["ebook-convert", str(input_path), str(output_path)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        print(f"ebook-convert failed (exit {result.returncode}):\n{result.stderr}")
-        return False
-    return True
-
-
-def convert_with_calibre(input_path: Path, output_dir: Path, format: Format) -> Path:
-    """Convert input to the specified format into output_dir."""
-    converted_path = output_dir / input_path.with_suffix(format.value).name
-    print(f"Converting {input_path.name} -> {converted_path.name} via ebook-convert...")
-    if not ebook_convert(input_path, converted_path):
-        raise RuntimeError("Conversion failed!")
-    return converted_path
-
-
-def to_epub_in_dir(input_path: Path, directory: Path) -> Path:
-    return convert_with_calibre(input_path, directory, Format.EPUB)
-
-
-def to_azw3_in_dir(input_path: Path, directory: Path) -> Path:
-    return convert_with_calibre(input_path, directory, Format.AZW3)
-
-
-# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -177,25 +143,21 @@ def fix_epub(
 ) -> Path:
     """Convert input to epub if needed, then fix it by replacing <svg>
     elements with <p class="calibre"> and converting inner
-    <image xlink:href="..."> to <img src="..." class="fit">.
+    <image xlink:href="..."> to <img src="...">.
 
-    Returns the path to the fixed epub (written alongside the original input
-    with a '_fixed' suffix).
+    Args:
+        input_epub_file_path: Path to the input epub file
+        output_epub_file_path: Path to the output epub file
+
+    Returns:
+        Path to the fixed epub.
     """
     input_path = Path(input_epub_file_path)
     output_path = Path(output_epub_file_path)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        # This conversion dance from epub (input) -> azw3 -> epub is necessary.
-        # Convering epub -> azw3 creates a bunch of css classes such as ".fit" and ".calibre"
-        # that is assumed in this script.
-        # Since manipulating azw3 is not as straight forward, it is converted
-        # back to epub (azw3 -> epub).
-        # Finally the epub is manipulated to fix the issue.
-        azw3_path = to_azw3_in_dir(input_path, tmp)
-        epub_path = to_epub_in_dir(azw3_path, tmp)
-        unzip_epub(epub_path, tmp / "unpacked")
+        unzip_epub(input_path, tmp / "unpacked")
         process_xhtml_files_in_dir(tmp / "unpacked")
         rezip_epub(tmp / "unpacked", output_path)
 
