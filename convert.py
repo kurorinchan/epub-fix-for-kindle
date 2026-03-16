@@ -1,8 +1,10 @@
 import argparse
 import tempfile
 import zipfile
+import logging
+import warnings
 from pathlib import Path
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
 from enum import Enum
 
 
@@ -12,7 +14,7 @@ class Format(Enum):
 
 
 # ---------------------------------------------------------------------------
-# Low-level element transforms
+# Fixing image tags.
 # ---------------------------------------------------------------------------
 
 
@@ -52,6 +54,42 @@ def svg_tag_to_p(svg_tag: Tag, soup: BeautifulSoup) -> Tag:
 
 
 # ---------------------------------------------------------------------------
+# Fixing RTL
+# ---------------------------------------------------------------------------
+
+_METADATA = "metadata"
+_META = "meta"
+_NAME = "name"
+_PRIMARY_WRITING_MODE = "primary-writing-mode"
+
+
+def _primary_writing_mode_defined(metadata: Tag) -> bool:
+    """Returns whether primary writing mode is defined in metadata."""
+    for meta in metadata.find_all(_META):
+        if meta.get(_NAME) == _PRIMARY_WRITING_MODE:
+            return True
+    return False
+
+
+def add_rtl_metadata(soup: BeautifulSoup) -> None:
+    _CONTENT = "content"
+    _VERTICAL_RTL = "vertical-rl"
+    for metadata in soup.find_all(_METADATA):
+        if _primary_writing_mode_defined(metadata):
+            continue
+        logging.debug("Found metadata without primary writing mode. Adding.")
+        metadata.append(
+            soup.new_tag(
+                _META,
+                attrs={
+                    _NAME: _PRIMARY_WRITING_MODE,
+                    _CONTENT: _VERTICAL_RTL,
+                },
+            )
+        )
+
+
+# ---------------------------------------------------------------------------
 # Document-level transform
 # ---------------------------------------------------------------------------
 
@@ -67,7 +105,11 @@ def parse_xhtml(content: bytes) -> BeautifulSoup:
     return BeautifulSoup(content, features="html.parser")
 
 
-def serialize_xhtml(soup: BeautifulSoup) -> bytes:
+def parse_opf(content: bytes) -> BeautifulSoup:
+    return BeautifulSoup(content, features="html.parser")
+
+
+def serialize_to_utf8(soup: BeautifulSoup) -> bytes:
     """Serialize a BeautifulSoup tree back to bytes."""
     return str(soup).encode("utf-8")
 
@@ -76,7 +118,13 @@ def process_xhtml_file(content: bytes) -> bytes:
     """Full pipeline for a single xhtml file: parse -> fix -> serialize."""
     soup = parse_xhtml(content)
     fix_svg_elements(soup)
-    return serialize_xhtml(soup)
+    return serialize_to_utf8(soup)
+
+
+def process_opf_file(content: bytes) -> bytes:
+    soup = parse_opf(content)
+    add_rtl_metadata(soup)
+    return serialize_to_utf8(soup)
 
 
 # ---------------------------------------------------------------------------
@@ -92,15 +140,25 @@ def file_contains_svg(content: bytes) -> bool:
     return b"<svg" in content
 
 
-def process_xhtml_files_in_dir(directory: Path) -> None:
+def is_opf_file(path: Path) -> bool:
+    return path.suffix.lower() == ".opf"
+
+
+def proceess_files_in_dir(directory: Path) -> None:
     """Walk a directory tree and fix every xhtml file that contains svg."""
     for fpath in directory.rglob("*"):
-        if not fpath.is_file() or not is_xhtml_file(fpath):
+        if not fpath.is_file():
             continue
-        content = fpath.read_bytes()
-        if not file_contains_svg(content):
-            continue
-        fpath.write_bytes(process_xhtml_file(content))
+        elif is_xhtml_file(fpath):
+            content = fpath.read_bytes()
+            if not file_contains_svg(content):
+                continue
+            fpath.write_bytes(process_xhtml_file(content))
+        elif is_opf_file(fpath):
+            logging.debug(f"Processing OPF file: {fpath}")
+            content = fpath.read_bytes()
+            b = process_opf_file(content)
+            fpath.write_bytes(b)
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +216,7 @@ def fix_epub(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         unzip_epub(input_path, tmp / "unpacked")
-        process_xhtml_files_in_dir(tmp / "unpacked")
+        proceess_files_in_dir(tmp / "unpacked")
         rezip_epub(tmp / "unpacked", output_path)
 
     print(f"Fixed epub written to: {output_path}")
@@ -169,10 +227,27 @@ def handle_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input", required=True, help="Path to the ebook file")
     parser.add_argument("-o", "--output", required=True, help="Output file path")
+    parser.add_argument(
+        "--fix-rtl",
+        help=(
+            "Makes an attempt to fix right-to-left text books layout. "
+            "For some books, Because the glyphs are vertical, the text might appear vertical and the sentences "
+            "are also aligned left-to-right. However the layout is horizontal. You see this "
+            "when you try to adjust the margins. Instead adding more margin "
+            "in the horizontal direction, it shrinks vertically. "
+            "This flag makes an attempt to fix that."
+        ),
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
     args = parser.parse_args()
     return args
 
 
 if __name__ == "__main__":
     args = handle_args()
+    # OPF is xml but the BS4 parser is not used to validate it, so just ignore the warning.
+    warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
     fix_epub(args.input, args.output)
