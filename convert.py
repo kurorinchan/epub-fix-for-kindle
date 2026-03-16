@@ -77,7 +77,9 @@ def add_rtl_metadata(soup: BeautifulSoup) -> None:
     for metadata in soup.find_all(_METADATA):
         if _primary_writing_mode_defined(metadata):
             continue
-        logging.debug("Found metadata without primary writing mode. Adding.")
+        logging.debug(
+            "Found <metadata> without primary writing mode. Adding RTL <meta> tag."
+        )
         metadata.append(
             soup.new_tag(
                 _META,
@@ -140,25 +142,27 @@ def file_contains_svg(content: bytes) -> bool:
     return b"<svg" in content
 
 
-def is_opf_file(path: Path) -> bool:
-    return path.suffix.lower() == ".opf"
-
-
-def proceess_files_in_dir(directory: Path) -> None:
+def process_xhtml_in_dir(directory: Path) -> None:
     """Walk a directory tree and fix every xhtml file that contains svg."""
     for fpath in directory.rglob("*"):
         if not fpath.is_file():
             continue
-        elif is_xhtml_file(fpath):
-            content = fpath.read_bytes()
-            if not file_contains_svg(content):
-                continue
-            fpath.write_bytes(process_xhtml_file(content))
-        elif is_opf_file(fpath):
-            logging.debug(f"Processing OPF file: {fpath}")
-            content = fpath.read_bytes()
-            b = process_opf_file(content)
-            fpath.write_bytes(b)
+        if not is_xhtml_file(fpath):
+            continue
+        content = fpath.read_bytes()
+        if not file_contains_svg(content):
+            continue
+        fpath.write_bytes(process_xhtml_file(content))
+
+
+def fix_rtl_in_dir(directory: Path) -> None:
+    for fpath in directory.rglob("*.opf"):
+        if not fpath.is_file():
+            continue
+        logging.debug(f"Processing OPF file: {fpath}")
+        content = fpath.read_bytes()
+        b = process_opf_file(content)
+        fpath.write_bytes(b)
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +201,7 @@ def fixed_epub_path(input_path: Path) -> Path:
 
 
 def fix_epub(
-    input_epub_file_path: str | Path, output_epub_file_path: str | Path
+    input_epub_file_path: str | Path, output_epub_file_path: str | Path, fix_rtl: bool
 ) -> Path:
     """Convert input to epub if needed, then fix it by replacing <svg>
     elements with <p class="calibre"> and converting inner
@@ -216,7 +220,10 @@ def fix_epub(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         unzip_epub(input_path, tmp / "unpacked")
-        proceess_files_in_dir(tmp / "unpacked")
+        process_xhtml_in_dir(tmp / "unpacked")
+        if fix_rtl:
+            fix_rtl_in_dir(tmp / "unpacked")
+
         rezip_epub(tmp / "unpacked", output_path)
 
     print(f"Fixed epub written to: {output_path}")
@@ -231,12 +238,13 @@ def handle_args():
         "--fix-rtl",
         help=(
             "Makes an attempt to fix right-to-left text books layout. "
-            "For some books, Because the glyphs are vertical, the text might appear vertical and the sentences "
-            "are also aligned left-to-right. However the layout is horizontal. You see this "
-            "when you try to adjust the margins. Instead adding more margin "
-            "in the horizontal direction, it shrinks vertically. "
-            "This flag makes an attempt to fix that."
+            "For some books, Because the glyphs are vertical, the text might appear vertical "
+            "already and the sentences "
+            "are also aligned left-to-right. However, the layout is horizontal. You see this "
+            "if the book has very little horizontal margin but rather big default vertical margin."
         ),
+        default=False,
+        action="store_true",
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
@@ -250,4 +258,4 @@ if __name__ == "__main__":
     # OPF is xml but the BS4 parser is not used to validate it, so just ignore the warning.
     warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
-    fix_epub(args.input, args.output)
+    fix_epub(args.input, args.output, args.fix_rtl)
